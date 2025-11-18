@@ -1,0 +1,8 @@
+server:
+  port: 8099
+spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB  # 单个文件最大大小
+      max-request-size: 100MB  # 整个请求最大大小
+
