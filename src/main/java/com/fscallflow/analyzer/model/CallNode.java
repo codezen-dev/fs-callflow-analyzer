@@ -1,11 +1,10 @@
 package com.fscallflow.analyzer.model;
 
 import lombok.Data;
-import java.util.Map;
 
 @Data
 public class CallNode {
-    private String id;
-    private String type;   // FS / Agent / Gateway / PBX / Script / HTTP
-    private Map<String,String> attrs;
+    private String id;       // node-pstn / node-fs / node-agent / node-ivr ...
+    private String type;     // PSTN / FS / Agent / IVR / Queue ...
+    private String label;    // 展示名称
 }

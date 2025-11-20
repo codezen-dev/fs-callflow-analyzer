@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>FS Callflow Analyzer</title>
+
+    <!-- Mermaid -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #f4f4f4;
+            font-family: Arial, sans-serif;
+        }
+
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+
+        #left-panel, #right-panel {
+            flex: 1;
+            padding: 20px;
+            overflow: auto;
+            background: white;
+            border-right: 1px solid #ddd;
+        }
+
+        #right-panel { border-right: none; }
+
+        #upload-box {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #fafafa;
+            border: 1px dashed #888;
+            text-align: center;
+        }
+
+        #mermaid-container {
+            background: #fff;
+            padding: 20px;
+            border: 1px solid #ddd;
+        }
+
+        .json-box {
+            white-space: pre-wrap;
+            background: #0f111a;
+            color: #e4e4e4;
+            padding: 15px;
+            font-size: 14px;
+            overflow: auto;
+            height: 50vh;
+            border-radius: 4px;
+        }
+
+        .summary-box, .diag-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        button {
+            padding: 8px 16px;
+            margin: 4px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div id="upload-box">
+    <input type="file" id="fileInput">
+    <button onclick="uploadLog()">分析</button>
+
+    <span id="callIndex"></span>
+    <button onclick="prevCall()">上一个呼叫</button>
+    <button onclick="nextCall()">下一个呼叫</button>
+</div>
+
+
+<div id="container">
+    <div id="left-panel">
+        <h3>Mermaid 呼叫流程图</h3>
+        <div id="mermaid-container">请上传日志</div>
+
+        <div class="summary-box">
+            <h3>呼叫摘要</h3>
+            <div id="summary"></div>
+        </div>
+
+        <div class="diag-box">
+            <h3>诊断结果</h3>
+            <div id="diagnosis"></div>
+        </div>
+    </div>
+
+    <div id="right-panel">
+        <h3>原始 Graph JSON</h3>
+        <div id="json-box" class="json-box"></div>
+    </div>
+</div>
+
+
+<script>
+    let results = [];
+    let currentIndex = 0;
+
+    mermaid.initialize({ startOnLoad: false });
+
+    function uploadLog() {
+        const file = document.getElementById("fileInput").files[0];
+        if (!file) {
+            alert("请选择 freeswitch.log 文件");
+            return;
+        }
+
+        const form = new FormData();
+        form.append("file", file);
+
+        fetch("/api/analyze/log2", {
+            method: "POST",
+            body: form
+        })
+            .then(res => res.json())
+            .then(data => {
+                results = data;
+                currentIndex = 0;
+                updateView();
+            })
+            .catch(err => alert("分析失败: " + err));
+    }
+
+    function updateView() {
+        if (results.length === 0) return;
+
+        const result = results[currentIndex];
+        document.getElementById("callIndex").innerText =
+            `当前呼叫：${currentIndex + 1} / ${results.length}`;
+
+        // 渲染 Mermaid
+        const mc = document.getElementById("mermaid-container");
+        const src = result.mermaid || "";
+
+// 1. 文本太长，直接不给 Mermaid 渲染
+        if (src.length > 8000) {   // 8000 这个阈值可以自己调
+            mc.innerHTML =
+                `<div style="padding:12px;color:#b94a48;background:#f2dede;border:1px solid #ebccd1;">
+            当前呼叫的时序图太长（${src.length} 字符），
+            Mermaid 无法渲染。<br>
+            建议缩短日志时间范围，或后续在后端做事件聚合。
+         </div>`;
+        } else {
+            // 2. 正常渲染 + 捕获 Mermaid 抛出的错误
+            mermaid
+                .render("theGraph", src)
+                .then(res => {
+                    mc.innerHTML = res.svg;
+                })
+                .catch(err => {
+                    console.error("Mermaid render error:", err);
+                    mc.innerHTML =
+                        `<div style="padding:12px;color:#b94a48;background:#f2dede;border:1px solid #ebccd1;">
+                    Mermaid 渲染失败：${err && err.message ? err.message : err}<br>
+                    （可以在右侧 JSON 中查看原始调用流程）
+                 </div>`;
+                });
+        }
+
+
+        // JSON
+        document.getElementById("json-box").innerText =
+            JSON.stringify(result.graph, null, 2);
+
+        // Summary
+        let s = result.graph.summary;
+        let summaryText = "";
+        if (s) {
+            summaryText += `开始：${s.startTime || '-'}<br>`;
+            summaryText += `结束：${s.endTime || '-'}<br>`;
+            summaryText += `时长：${s.durationMs || '-'} ms<br>`;
+            summaryText += `应答：${s.answered}<br>`;
+            summaryText += `坐席：${s.agentId || '未分配'}<br>`;
+            summaryText += `队列：${s.queueName || '未进入队列'}<br>`;
+            summaryText += `用户按键：${s.dtmfSequence || '-'}<br>`;
+        }
+        document.getElementById("summary").innerHTML = summaryText;
+
+        // Diagnosis
+        const diags = result.graph.diagnoses || [];
+        let diagHtml = "";
+        for (let d of diags) {
+            diagHtml += `<b>${d.title}</b><br>`;
+            diagHtml += `<span style="color: gray">${d.severity}</span><br>`;
+            diagHtml += `${d.detail}<br>`;
+            if (d.hints && d.hints.length > 0) {
+                diagHtml += `<ul>`;
+                for (let h of d.hints) diagHtml += `<li>${h}</li>`;
+                diagHtml += `</ul>`;
+            }
+            diagHtml += `<hr>`;
+        }
+        document.getElementById("diagnosis").innerHTML = diagHtml;
+    }
+
+    function prevCall() {
+        if (currentIndex > 0) {
+            currentIndex--;
+            updateView();
+        }
+    }
+
+    function nextCall() {
+        if (currentIndex < results.length - 1) {
+            currentIndex++;
+            updateView();
+        }
+    }
+</script>
+
+</body>
+</html>
