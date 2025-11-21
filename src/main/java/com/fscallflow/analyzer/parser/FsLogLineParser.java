@@ -17,68 +17,54 @@ import java.util.regex.Pattern;
 @Slf4j
 public class FsLogLineParser {
 
-    // 示例：2025-11-03 19:05:24.187278 98.17% [NOTICE] switch_channel.c:...
-    private static final Pattern PATTERN_NO_UUID = Pattern.compile(
-            "^\\s*(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+)" +
-                    "\\s+\\S+\\s+\\[(?<level>\\w+)]\\s+(?<module>[^:]+):[^\\s]+\\s*(?<msg>.*)$");
-
-    // 示例：UUID 2025-11-03 19:05:24.18... [DEBUG] sofia.c:... msg
-    private static final Pattern PATTERN_WITH_UUID = Pattern.compile(
-            "^(?<uuid>[0-9a-fA-F\\-]{36})\\s+" +
-                    "(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+).*?\\[(?<level>\\w+)]\\s+(?<module>[^:]+):[^\\s]+\\s*(?<msg>.*)$");
-
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+
+    /**
+     * 通用格式：
+     *  [可选] <uuid>
+     *  <ts> <percent>% [LEVEL] module: msg [可选uuid]
+     *
+     *  例1（无行首 uuid，有行尾 uuid）：
+     *  2025-11-03 19:05:24.187278 98.17% [NOTICE] switch_channel.c:1142 ... [ba75bf3b-...]
+     *
+     *  例2（有行首 uuid，无行尾 uuid）：
+     *  ba75bf3b-... 2025-11-03 19:05:24.187278 98.17% [DEBUG] sofia.c:7493 ...
+     */
+    private static final Pattern PATTERN_MAIN = Pattern.compile(
+            "^(?:(?<uuid1>[0-9a-fA-F\\-]{36})\\s+)?" +                 // optional leading UUID
+                    "(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+)" + // timestamp
+                    "\\s+\\S+\\s+\\[(?<level>\\w+)\\]\\s+" +                    // 98.17% [NOTICE]
+                    "(?<module>[^:]+):\\s*" +                                  // switch_channel.c:
+                    "(?<msg>.*?)(?:\\s+\\[(?<uuid2>[0-9a-fA-F\\-]{36})])?$"     // optional tail [uuid]
+    );
 
     public RawEvent parse(String line) {
         if (line == null || line.isBlank()) {
             return null;
         }
-        RawEvent ev = tryWithUuid(line);
-        if (ev == null) {
-            ev = tryNoUuid(line);
-        }
-        if (ev == null) {
-            // 实在解析不了，就只保留 raw
-            ev = new RawEvent();
+
+        Matcher m = PATTERN_MAIN.matcher(line);
+        if (m.find()) {
+            RawEvent ev = new RawEvent();
+            String uuid = m.group("uuid1");
+            if (uuid == null) {
+                uuid = m.group("uuid2");
+            }
+            ev.setUuid(uuid);
+            ev.setTs(LocalDateTime.parse(m.group("ts"), TS_FMT));
+            ev.setLevel(m.group("level"));
+            ev.setModule(m.group("module"));
+            ev.setMsg(m.group("msg"));
             ev.setRaw(line);
+            return ev;
         }
-        return ev;
-    }
 
-    private RawEvent tryWithUuid(String line) {
-        Matcher m = PATTERN_WITH_UUID.matcher(line);
-        if (!m.find()) return null;
-
+        // 其他完全匹配不上的（纯 SDP、XML、栈轨迹等），先原样保留 raw，
+        // 但不要生成新的“会话”，后面聚合时可以忽略 uuid=null 的。
         RawEvent ev = new RawEvent();
-        ev.setUuid(m.group("uuid"));
-        ev.setTs(parseTs(m.group("ts")));
-        ev.setLevel(m.group("level"));
-        ev.setModule(m.group("module"));
-        ev.setMessage(m.group("msg"));
         ev.setRaw(line);
         return ev;
-    }
-
-    private RawEvent tryNoUuid(String line) {
-        Matcher m = PATTERN_NO_UUID.matcher(line);
-        if (!m.find()) return null;
-
-        RawEvent ev = new RawEvent();
-        ev.setTs(parseTs(m.group("ts")));
-        ev.setLevel(m.group("level"));
-        ev.setModule(m.group("module"));
-        ev.setMessage(m.group("msg"));
-        ev.setRaw(line);
-        return ev;
-    }
-
-    private LocalDateTime parseTs(String ts) {
-        try {
-            return LocalDateTime.parse(ts.trim(), TS_FMT);
-        } catch (Exception e) {
-            log.debug("解析时间失败: {}", ts);
-            return null;
-        }
     }
 }
+

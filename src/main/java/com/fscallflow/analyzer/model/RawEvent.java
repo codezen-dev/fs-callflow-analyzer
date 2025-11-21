@@ -16,4 +16,5 @@ public class RawEvent {
     private String threadId;         // 可选
     private String message;          // 剩余文本（不含前缀）
     private String raw;              // 完整原始行
+    private String msg;              // 剩余文本（不含前缀）
 }
