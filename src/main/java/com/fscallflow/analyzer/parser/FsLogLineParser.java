@@ -31,20 +31,22 @@ public class FsLogLineParser {
      *  例2（有行首 uuid，无行尾 uuid）：
      *  ba75bf3b-... 2025-11-03 19:05:24.187278 98.17% [DEBUG] sofia.c:7493 ...
      */
-    private static final Pattern PATTERN_MAIN = Pattern.compile(
-            "^(?:(?<uuid1>[0-9a-fA-F\\-]{36})\\s+)?" +                 // optional leading UUID
-                    "(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+)" + // timestamp
-                    "\\s+\\S+\\s+\\[(?<level>\\w+)\\]\\s+" +                    // 98.17% [NOTICE]
-                    "(?<module>[^:]+):\\s*" +                                  // switch_channel.c:
-                    "(?<msg>.*?)(?:\\s+\\[(?<uuid2>[0-9a-fA-F\\-]{36})])?$"     // optional tail [uuid]
+    // FsLogLineParser.java
+
+// 带 UUID 的行（行首可有空格；UUID 可能在最前面，也可能在方括号里）
+    private static final Pattern PATTERN_WITH_UUID = Pattern.compile(
+            "^\\s*(?:<(?<uuid1>[0-9a-fA-F\\-]{36})>\\s+)?" +           // 可选：行首 <uuid>
+                    "(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+)\\s+" +
+                    "\\d+\\.\\d+%\\s+\\[(?<level>\\w+)\\]\\s+(?<module>[^ ]+)\\s+(?<msg>.*?)(?:\\[(?<uuid2>[0-9a-fA-F\\-]{36})])?\\s*$"
     );
+
 
     public RawEvent parse(String line) {
         if (line == null || line.isBlank()) {
             return null;
         }
 
-        Matcher m = PATTERN_MAIN.matcher(line);
+        Matcher m = PATTERN_WITH_UUID.matcher(line);
         if (m.find()) {
             RawEvent ev = new RawEvent();
             String uuid = m.group("uuid1");
