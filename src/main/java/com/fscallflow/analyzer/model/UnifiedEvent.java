@@ -7,6 +7,7 @@ import java.util.Map;
 
 /**
  * 从 RawEvent 抽象后的“统一事件”，后续所有逻辑都基于它。
+ * 这里不强行限制来源，只要能凑齐这些字段的都可以塞进来。
  */
 @Data
 public class UnifiedEvent {
@@ -17,13 +18,25 @@ public class UnifiedEvent {
     /** 事件时间 */
     private LocalDateTime ts;
 
-    /** 呼叫全局标识：优先用 UUID，没有就用 call-id 或我们构造的 key */
+    /**
+     * 全局呼叫 ID：
+     * - 优先使用自定义业务 ID（globalCallId / traceId 等）
+     * - 再用 SIP Call-ID
+     * - 再用 FS UUID（主腿）
+     * - 最后兜底 "unknown"
+     */
     private String callId;
 
-    /** A腿 / B腿 / queue 等 */
+    /**
+     * 腿 ID：A腿 / B腿 / queue leg 等。
+     * 对 FS 来说，一般就是该行日志里的 UUID。
+     */
     private String legId;
 
-    /** 大类：SIGNAL / DIALPLAN / CALLCENTER / MEDIA / SCRIPT / HTTP ... */
+    /**
+     * 事件大类：
+     * SIGNAL / DIALPLAN / CALLCENTER / MEDIA / SCRIPT / HTTP / OTHER
+     */
     private String category;
 
     /** 动词：INVITE / ANSWER / BRIDGE / HANGUP / DTMF / QUEUE 等 */
@@ -32,7 +45,10 @@ public class UnifiedEvent {
     /** 更细的类型，用 FsEventType 来表达 */
     private FsEventType type;
 
-    /** 额外属性，比如 digit、queue、agentId、destNumber 等 */
+    /**
+     * 额外属性：
+     * digit / queue / agentId / sipCallId / globalCallId / caller / callee / direction ...
+     */
     private Map<String, String> attrs;
 
     /** 原始行文本（方便跳转和排查） */
