@@ -67,6 +67,12 @@
             padding: 8px 16px;
             margin: 4px;
         }
+
+        .summary-label {
+            display: inline-block;
+            width: 80px;
+            color: #666;
+        }
     </style>
 </head>
 
@@ -134,6 +140,20 @@
             .catch(err => alert("分析失败: " + err));
     }
 
+    function formatDirection(dir) {
+        if (!dir) return "-";
+        switch (dir.toLowerCase()) {
+            case "inbound":
+                return "呼入";
+            case "outbound":
+                return "呼出";
+            case "internal":
+                return "内部";
+            default:
+                return dir; // 兼容未来自定义值
+        }
+    }
+
     function updateView() {
         if (results.length === 0) return;
 
@@ -145,13 +165,12 @@
         const mc = document.getElementById("mermaid-container");
         const src = result.mermaid || "";
 
-// 1. 文本太长，直接不给 Mermaid 渲染
-        if (src.length > 8000) {   // 8000 这个阈值可以自己调
+        // 1. 文本太长，直接不给 Mermaid 渲染
+        if (src.length > 8000) {
             mc.innerHTML =
                 `<div style="padding:12px;color:#b94a48;background:#f2dede;border:1px solid #ebccd1;">
-            当前呼叫的时序图太长（${src.length} 字符），
-            Mermaid 无法渲染。<br>
-            建议缩短日志时间范围，或后续在后端做事件聚合。
+            当前呼叫的时序图太长（${src.length} 字符），Mermaid 无法渲染。<br>
+            建议缩短日志时间范围，或在后端做事件聚合。
          </div>`;
         } else {
             // 2. 正常渲染 + 捕获 Mermaid 抛出的错误
@@ -170,26 +189,28 @@
                 });
         }
 
-
         // JSON
         document.getElementById("json-box").innerText =
             JSON.stringify(result.graph, null, 2);
 
-        // Summary
-        let s = result.graph.summary;
+        // ===== 呼叫摘要 =====
+        const s = result.graph.summary || {};
         let summaryText = "";
-        if (s) {
-            summaryText += `开始：${s.startTime || '-'}<br>`;
-            summaryText += `结束：${s.endTime || '-'}<br>`;
-            summaryText += `时长：${s.durationMs || '-'} ms<br>`;
-            summaryText += `应答：${s.answered}<br>`;
-            summaryText += `坐席：${s.agentId || '未分配'}<br>`;
-            summaryText += `队列：${s.queueName || '未进入队列'}<br>`;
-            summaryText += `用户按键：${s.dtmfSequence || '-'}<br>`;
-        }
+
+        summaryText += `<span class="summary-label">开始：</span>${s.startTime || '-'}<br>`;
+        summaryText += `<span class="summary-label">结束：</span>${s.endTime || '-'}<br>`;
+        summaryText += `<span class="summary-label">时长：</span>${s.durationMs != null ? s.durationMs + ' ms' : '-'}<br>`;
+        summaryText += `<span class="summary-label">方向：</span>${formatDirection(s.direction)}<br>`;
+        summaryText += `<span class="summary-label">主叫：</span>${s.caller || '-'}<br>`;
+        summaryText += `<span class="summary-label">被叫：</span>${s.callee || '-'}<br>`;
+        summaryText += `<span class="summary-label">应答：</span>${s.answered === true ? 'true' : (s.answered === false ? 'false' : '-') }<br>`;
+        summaryText += `<span class="summary-label">坐席：</span>${s.agentId || '未分配'}<br>`;
+        summaryText += `<span class="summary-label">队列：</span>${s.queueName || '未进入队列'}<br>`;
+        summaryText += `<span class="summary-label">用户按键：</span>${s.dtmfSequence || '-'}<br>`;
+
         document.getElementById("summary").innerHTML = summaryText;
 
-        // Diagnosis
+        // ===== 诊断结果 =====
         const diags = result.graph.diagnoses || [];
         let diagHtml = "";
         for (let d of diags) {
@@ -203,7 +224,7 @@
             }
             diagHtml += `<hr>`;
         }
-        document.getElementById("diagnosis").innerHTML = diagHtml;
+        document.getElementById("diagnosis").innerHTML = diagHtml || "暂无诊断信息。";
     }
 
     function prevCall() {

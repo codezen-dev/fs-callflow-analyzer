@@ -29,34 +29,39 @@ public class EventCorrelator {
             return List.of();
         }
 
-        // ⭐ 使用全局呼叫合并器
+        // 使用全局呼叫合并器，把同一通话的多个 UUID / SIP 会话合并成一个分组
         CallJoiner joiner = new CallJoiner();
         Map<String, List<UnifiedEvent>> groups = joiner.groupCalls(events);
 
         List<AnalyzeResult> results = new ArrayList<>();
 
-        for (var entry : groups.entrySet()) {
+        for (Map.Entry<String, List<UnifiedEvent>> entry : groups.entrySet()) {
             String groupId = entry.getKey();
             List<UnifiedEvent> evts = entry.getValue();
+            if (evts == null || evts.isEmpty()) {
+                continue;
+            }
 
-            // ===== 噪声组过滤：callId=unknown 且 没有任何核心信令事件，直接丢掉 =====
-            boolean hasCoreSignal = evts.stream().anyMatch(e -> CORE_SIGNAL_TYPES.contains(e.getType()));
+            // ===== 噪声组过滤：callId=unknown 且 不包含任何核心信令事件（INVITE/ANSWER/HANGUP/BRIDGE）的，直接视为噪声丢掉 =====
+            boolean hasCoreSignal = evts.stream()
+                    .map(UnifiedEvent::getType)
+                    .filter(Objects::nonNull)
+                    .anyMatch(CORE_SIGNAL_TYPES::contains);
 
             boolean noiseGroup = "unknown".equals(groupId) && !hasCoreSignal;
             if (noiseGroup) {
-                log.debug("Skip noise group: id={}, size={}, sample={}",
-                        groupId, evts.size(), evts.get(0).getRaw());
                 continue;
             }
-            // ==========================================================================
+            // ===================================================================================================
 
-            // 排序 + 构图
+            // 按时间排序（允许 ts 为空，排在最后）
             List<UnifiedEvent> sorted = evts.stream()
                     .sorted(Comparator.comparing(
-                            e -> Optional.ofNullable(e.getTs()).orElse(null),
+                            UnifiedEvent::getTs,
                             Comparator.nullsLast(Comparator.naturalOrder())))
                     .toList();
 
+            // 用分组 ID 作为 CallGraph 的 globalId（真正的 FS UUID / SIP Call-ID 会在 summary.fsCallIds 里体现）
             CallGraph graph = buildGraph(groupId, sorted);
             String mermaid = buildMermaid(graph);
 
@@ -66,9 +71,9 @@ public class EventCorrelator {
             results.add(ar);
         }
 
-
         return results;
     }
+
 
 
     private CallGraph buildGraph(String callId, List<UnifiedEvent> events) {
@@ -111,6 +116,18 @@ public class EventCorrelator {
         boolean answerAdded = false;
         boolean bridgeAdded = false;
         Long lastHangupTs = null;   // 先记录时间，最后再补 HANGUP 边
+        // 构建 summary 前，先算主通道（primaryFsId）以用于 DTMF 过滤
+        LinkedHashSet<String> fsIdsPre = events.stream()
+                .map(UnifiedEvent::getLegId)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty() && !"unknown".equals(s))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        String primaryFsId = fsIdsPre.stream().findFirst().orElse(callId);
+        // 用于 DTMF 去重：同一腿、同一 digit、时间很近，则视为一次按键
+        String lastDtmfDigit = null;
+        Long lastDtmfTs = null;
 
         for (UnifiedEvent e : events) {
             Long tsMillis = 0l;
@@ -171,15 +188,25 @@ public class EventCorrelator {
                     edge.setAttrs(e.getAttrs() == null ? Map.of() : e.getAttrs());
                     edges.add(edge);
                 }
-
                 case DTMF -> {
-                    // 不画边，只累积数字
                     String digit = e.getAttrs() != null ? e.getAttrs().get("digit") : null;
-                    if (digit != null) {
-                        dtmfSeq.append(digit);
+                    if (digit != null && primaryFsId != null && primaryFsId.equals(e.getLegId())) {
+                        Long ts = e.getTs() == null ? null :
+                                e.getTs().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+                        // 同一腿 + 相同 digit + 时间差 <= 2 秒，视为同一次按键（RTP/CHANNEL 重复日志）
+                        if (digit.equals(lastDtmfDigit)
+                                && ts != null
+                                && lastDtmfTs != null
+                                && Math.abs(ts - lastDtmfTs) <= 2000L) {
+                            // 忽略这条重复 DTMF
+                        } else {
+                            dtmfSeq.append(digit);
+                            lastDtmfDigit = digit;
+                            lastDtmfTs = ts;
+                        }
                     }
                 }
-
                 case CALLCENTER_EVENT -> {
                     if (!anyQueueEvent) {
                         // 只保留第一条队列事件
@@ -256,6 +283,18 @@ public class EventCorrelator {
 
         // ========= Summary =========
         CallSummary summary = new CallSummary();
+
+        // 只统计本组内出现的 FS legId（真实 UUID），不再混入业务 callId
+        LinkedHashSet<String> fsIds = events.stream()
+                .map(UnifiedEvent::getLegId)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty() && !"unknown".equals(s))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        summary.setPrimaryFsCallId(primaryFsId);
+        summary.setFsCallIds(new ArrayList<>(fsIds));
+
         summary.setCaller(caller);
         summary.setCallee(callee);
         summary.setAgentId(agentId);
@@ -268,6 +307,7 @@ public class EventCorrelator {
                 .filter(Objects::nonNull)
                 .findFirst()
                 .orElse(null);
+
         // 是否已经进入队列
         boolean queueDetected =
                 anyQueueEvent ||
@@ -297,14 +337,6 @@ public class EventCorrelator {
 
 
 
-        // 是否桥接坐席（包含 mod_callcenter 的 bridge 行）
-        boolean bridgeDetected =
-                anyBridge ||
-                        events.stream().anyMatch(ev ->
-                                ev.getAttrs() != null &&
-                                        "true".equals(ev.getAttrs().get("callcenterBridge"))
-                        );
-
         // 坐席 ID（如果存在）
         String detectedAgent =
                 events.stream()
@@ -312,6 +344,17 @@ public class EventCorrelator {
                         .filter(Objects::nonNull)
                         .findFirst()
                         .orElse(null);
+        // 增加兜底：有 ANSWER 且有 agentId 也视为桥接成功
+        boolean bridgeDetected =
+                anyBridge ||
+                        events.stream().anyMatch(ev ->
+                                ev.getAttrs() != null &&
+                                        "true".equals(ev.getAttrs().get("callcenterBridge"))
+                        ) ||
+                        (answered && detectedAgent != null);
+
+
+
 
         // ================= 队列诊断 =================
         if (!queueDetected) {
